@@ -27,6 +27,7 @@ configs=("cslicer"
 )
 for c in "${configs[@]}"; do
     mkdir -p file-level/output/$c
+    mkdir -p file-level/configs/$c
 done
 
 # Download and cache repo from DoSC dataset: https://github.com/Chenguang-Zhu/DoSC

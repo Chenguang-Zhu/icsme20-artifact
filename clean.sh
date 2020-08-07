@@ -12,5 +12,5 @@ rm -rf file-level/touchset
 rm -rf file-level/_test_classes_backup
 rm -rf file-level/cached-repos/
 rm -rf file-level/suffix-cache/
+rm -rf file-level/configs
 rm -rf _downloads
-git checkout file-level/configs

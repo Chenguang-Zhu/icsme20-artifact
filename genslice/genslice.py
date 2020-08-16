@@ -1198,35 +1198,82 @@ def runDefinerStandalone(example):
     countChangedLines(definer_log, repo_path, 'definer')
     #backupRepoForDebugging(example, repo_path)
 
-def runSplitCSlicer(example):
+@with_goto
+def runSplitCSlicer(example, share_prefix, share_suffix, \
+                    orig_history_dir=ORIG_HISTORY_DIR, \
+                    cached_repos_dir=CACHED_REPOS_DIR, \
+                    output_dir=SPLIT_CSLICER_OUTPUT_DIR, \
+                    configs_dir=SPLIT_CSLICER_CONFIGS_DIR):
     print ('Starting Example :' + example)
+    # start counting the exec time
     start_time = time.time()
-    # extract info from cslicer orig config file
     start, end, repo_name, test_suite, repo_path, lines, config_file = \
                                             extractInfoFromCSlicerConfigs(example)
+    # remove the old repo in _downloads dir
     if os.path.isdir(repo_path):
         print ('remove old repo')
-        shutil.rmtree(repo_path)
+        time.sleep(30)
+        shutil.rmtree(repo_path, ignore_errors=True)
+    # check if cache is disabled
+    is_run_from_cache = False
     shutil.copytree(repo_path + '-cache', repo_path)
+    # suffix cache: cache initial state, using full suffix
+    orig_history = getOriginalHistory(start, end, repo_path)
+    orig_history_file = orig_history_dir + '/' + example + '.hist'
+    fw = open(orig_history_file, 'w')
+    fw.write('\n'.join(orig_history))
+    fw.close()
+    label .split
+    # -------------------------------- split start -------------------------------------
+    # split commits by file
+    splitCommitsByFile(example, repo_path, start, end, 'after-split')
+    # generate split log file
+    split_log = genSplitLogFile(example, config='split-cslicer', start=start, \
+                                repo_path=repo_path, branch='after-split')
+    split_end_time = time.time()
+    split_exec_time = split_end_time - start_time
+    countChangedLines(split_log, repo_path, 'split')
+    # -------------------------------- split end -------------------------------------
+    label .cslicer
+    # -------------------------------- cslicer start -------------------------------------
+    # generate new config files for splitted history
+    split_config_file = genSplittedConfigFile(example, repo_path, lines, configs_dir, \
+                                              'after-split')
     # run tests at end commit, generate jacoco files
     runTestsGenJacoco(example, end, repo_path, test_suite)
     # stash changes on pom
     sub.run('git stash', shell=True)
-    # split commits by file
-    splitCommitsByFile(example, repo_path, start, end)
-    # generate new config files for splitted history
-    split_config_file = genSplittedConfigFile(example, repo_path, lines, \
-                                                  SPLIT_CSLICER_CONFIGS_DIR)
     # run cslicer on splitted history, save logs
-    cslicer_split_log = SPLIT_CSLICER_OUTPUT_DIR + '/' + example + '.log'
-    runCSlicerTool(cslicer_split_log, split_config_file, 'filelevel')
+    cslicer_split_log = output_dir + '/' + example + '.log'
+    runCSlicerTool(cslicer_split_log, split_config_file, 'after-split')
+    # cherry-pick history slice to a new branch, reset start and end
+    cslicer_history_slice, commit_msg_list = \
+                                    extractHistorySliceFromCSlicerLog(cslicer_split_log)
+    # for NET-525, NET-527 (how to do in split level?)
+    # if example == 'NET-525' or example == 'NET-527':
+    #     cslicer_history_slice.append('4379a681')
+    #     commit_msg_list.append('Cut-n-paste bug')
+    end = applyHistorySlice(repo_path, start, cslicer_history_slice, commit_msg_list, \
+                                'after-split-cslicer')
+    cachePrefixRepoIfNotAlreadyCached(example, 'split-cslicer', repo_path)
+    cslicer_end_time = time.time()
+    cslicer_exec_time = cslicer_end_time - split_end_time
+    countChangedLines(cslicer_split_log, repo_path, 'cslicer')
     # -------------------------------- cslicer end -------------------------------------
+    final_log = cslicer_split_log
+    label .timeout
+    label .skip_suffix
     # debug: move repo to somewhere else
     end_time = time.time()
     run_time = end_time - start_time
-    putTimeinLog(cslicer_split_log, run_time)
-    countChangedLines(cslicer_split_log, repo_path, 'cslicer')
+    time_dict = collections.OrderedDict({})
+    time_dict['[Split Exec Time]'] = split_exec_time
+    time_dict['[CSlicer Exec Time]'] = cslicer_exec_time
+    time_dict['[Total Exec Time]'] = run_time
+    insertTimeDictinLog(final_log, time_dict)
+    countChangedLines(final_log, repo_path, 'cslicer')
     #backupRepoForDebugging(example, repo_path)
+    cleanTempLogs()
 
 @with_goto
 def runSplitDefiner(example, share_prefix, share_suffix, orig_history_dir=ORIG_HISTORY_DIR, \
@@ -1595,50 +1642,105 @@ def runCSlicerSplitDefiner(example, share_prefix, share_suffix, \
     # clean temp logs
     cleanTempLogs()
 
-def runDefinerSplitCSlicer(example):
+
+@with_goto
+def runDefinerSplitCSlicer(example, share_prefix, share_suffix, \
+                           orig_history_dir=ORIG_HISTORY_DIR, \
+                           cached_repos_dir=CACHED_REPOS_DIR, \
+                           output_dir=DEFINER_SPLIT_CSLICER_OUTPUT_DIR, \
+                           configs_dir=DEFINER_SPLIT_CSLICER_CONFIGS_DIR):
     print ('Starting Example :' + example)
+    # start counting the exec time
     start_time = time.time()
     # extract info from config file
     start, end, repo_name, build_script_path, test_suite, repo_path, lines, config_file = \
                                                      extractInfoFromDefinerConfigs(example)
+    # remove the old repo in _downloads dir
     if os.path.isdir(repo_path):
         print ('remove old repo')
-        shutil.rmtree(repo_path)
-    shutil.copytree(repo_path + '-cache', repo_path)
+        time.sleep(30)
+        shutil.rmtree(repo_path, ignore_errors=True)
+    # check if cache is disabled
+    if not share_prefix:
+        is_run_from_cache = False
+        shutil.copytree(repo_path + '-cache', repo_path)
+    # a label indicating whether any suffix is saved in this run
+    is_suffix_skipped = False
+    # suffix cache: cache initial state, using full suffix
+    orig_history = getOriginalHistory(start, end, repo_path)
+    orig_history_file = orig_history_dir + '/' + example + '.hist'
+    fw = open(orig_history_file, 'w')
+    fw.write('\n'.join(orig_history))
+    fw.close()
+    label .definer
+    # -------------------------------- definer start -------------------------------------
     # checkout to end commit and run the tests
     runTestsAtEndCommitForDefiner(example, end, repo_path, test_suite)
     # run definer, save temp logs
-    definer_log = DEFINER_SPLIT_CSLICER_OUTPUT_DIR + '/' + example + '.log.phase1'
+    definer_log = output_dir + '/' + example + '.log.phase1'
     runDefinerTool(definer_log, config_file, 'definerorig')
     cleanRepoAfterDefinerTimeout(repo_path) # when definer timeout, remove lock files
-    # -------------------------------- definer end -------------------------------------
     # extract history slice from definer log
-    definer_history_slice, commit_msg_list = \
-                                         extractHistorySliceFromDefinerLog(definer_log)
-    end = applyHistorySlice(repo_path, start, definer_history_slice, commit_msg_list, \
-                                'afterdefiner')
+    history_slice, commit_msg_list = extractHistorySliceFromDefinerLog(definer_log)
+    if len(history_slice) == 0 and len(commit_msg_list) == 0:
+        print ('Definer times out!')
+        definer_exec_time = 'TIME OUT'
+        split_exec_time = 'NOT RUN'
+        cslicer_exec_time = 'NOT RUN'
+        final_log = definer_log
+        goto .timeout
+    end = applyHistorySlice(repo_path, start, history_slice, commit_msg_list, 'after-definer')
+    definer_end_time = time.time()
+    definer_exec_time = definer_end_time - start_time
+    countChangedLines(definer_log, repo_path, 'definer')
+    # -------------------------------- definer end -------------------------------------
+    label .split
+    # -------------------------------- split start -------------------------------------
     # split commits by file
-    splitCommitsByFile(example, repo_path, start, end)
+    splitCommitsByFile(example, repo_path, start, end, 'after-definer-split')
+    # generate split log file
+    split_log = genSplitLogFile(example, config='definer-split-cslicer', start=start, \
+                                repo_path=repo_path, branch='after-definer-split')
+    split_end_time = time.time()
+    split_exec_time = split_end_time - definer_end_time
+    countChangedLines(split_log, repo_path, 'split')
+    # -------------------------------- split end -------------------------------------
+    label .cslicer
+    # -------------------------------- cslicer start -------------------------------------
     # generate new config files for splitted history
     _, end, _, test_suite, _, lines, _ = extractInfoFromCSlicerConfigs(example)
     split_config_file = \
-            genSplittedConfigFile(example, repo_path, lines, DEFINER_SPLIT_CSLICER_CONFIGS_DIR)
+            genSplittedConfigFile(example, repo_path, lines, configs_dir, 'after-definer-split')
     # run tests at end commit, generate jacoco files
     runTestsGenJacoco(example, end, repo_path, test_suite)
     # stash changes on pom
     sub.run('git stash', shell=True)
     # run cslicer on split history, save logs
-    cslicer_log = DEFINER_SPLIT_CSLICER_OUTPUT_DIR + '/' + example + '.log'
-    runCSlicerTool(cslicer_log, split_config_file, 'filelevel')
+    cslicer_log = output_dir + '/' + example + '.log'
+    runCSlicerTool(cslicer_log, split_config_file, 'after-definer-split')
+    history_slice, commit_msg_list = extractHistorySliceFromCSlicerLog(cslicer_log)
+    end = applyHistorySlice(repo_path, start, history_slice, commit_msg_list, \
+                                'after-definer-split-cslicer')
+    cslicer_end_time = time.time()
+    cslicer_exec_time = cslicer_end_time - split_end_time
+    countChangedLines(cslicer_log, repo_path, 'cslicer')
+    final_log = cslicer_log
     # -------------------------------- cslicer end -------------------------------------
+    label .timeout
+    label .skip_suffix
     # debug: move repo to somewhere else
     end_time = time.time()
     run_time = end_time - start_time
-    putTimeinLog(cslicer_log, run_time)
-    countChangedLines(cslicer_log, repo_path, 'cslicer')
+    time_dict = collections.OrderedDict({})
+    time_dict['[Definer Exec Time]'] = definer_exec_time
+    time_dict['[Split Exec Time]'] = split_exec_time
+    time_dict['[CSlicer Exec Time]'] = cslicer_exec_time
+    time_dict['[Total Exec Time]'] = run_time
+    insertTimeDictinLog(final_log, time_dict)
+    countChangedLines(final_log, repo_path, 'cslicer')
     #backupRepoForDebugging(example, repo_path)
     # clean temp logs
-    cleanTempLogs()
+    cleanTempLogs()    
 
 @with_goto
 def runDefinerSplitDefiner(example, share_prefix, share_suffix, \
@@ -1822,32 +1924,46 @@ def runDefinerSplitDefiner(example, share_prefix, share_suffix, \
     # clean temp logs
     cleanTempLogs()
 
-def runCSlicerDefiner(example):
+@with_goto
+def runCSlicerDefiner(example, share_prefix, share_suffix, \
+                      orig_history_dir=ORIG_HISTORY_DIR, \
+                      cached_repos_dir=CACHED_REPOS_DIR, \
+                      output_dir=CSLICER_DEFINER_OUTPUT_DIR, \
+                      configs_dir=CSLICER_DEFINER_CONFIGS_DIR):
     print ('Starting Example :' + example)
+    # start counting the exec time
     start_time = time.time()
-    # extract info from cslicer orig config file
+    # remove the old repo in _downloads dir
     start, end, repo_name, test_suite, repo_path, lines, config_file = \
                                             extractInfoFromCSlicerConfigs(example)
     if os.path.isdir(repo_path):
         print ('remove old repo')
-        shutil.rmtree(repo_path)
-    shutil.copytree(repo_path + '-cache', repo_path)
+        time.sleep(30)
+        shutil.rmtree(repo_path, ignore_errors=True)
+    # check if cache is disabled
+    if not share_prefix:
+        is_run_from_cache = False
+        shutil.copytree(repo_path + '-cache', repo_path)
+    # a label indicating whether any suffix is saved in this run
+    is_suffix_skipped = False
+    # suffix cache: cache initial state, using full suffix
+    orig_history = getOriginalHistory(start, end, repo_path)
+    orig_history_file = orig_history_dir + '/' + example + '.hist'
+    fw = open(orig_history_file, 'w')
+    fw.write('\n'.join(orig_history))
+    fw.close()
+    label .cslicer
+    # -------------------------------- cslicer start -------------------------------------
     # run tests at end commit, generate jacoco files
     runTestsGenJacoco(example, end, repo_path, test_suite)
     # stash changes on pom
     sub.run('git stash', shell=True)
-    # run cslicer on original history, save temp logs
-    if os.path.isdir(TEMP_FILES_DIR + '/target'):
-        shutil.rmtree(TEMP_FILES_DIR + '/target')
-    shutil.copytree(repo_path + '/target', TEMP_FILES_DIR + '/target') # copy target dir
-    cslicer_temp_log = CSLICER_DEFINER_OUTPUT_DIR + '/' \
-                           + example + '.log.phase1'
+    cslicer_temp_log = output_dir + '/' + example + '.log.phase1'
     runCSlicerTool(cslicer_temp_log, config_file, 'orig')
     # delete orig branch
-    sub.run('git checkout trunk', shell=True)
-    sub.run('git checkout master', shell=True)
-    sub.run('git branch -D orig', shell=True)
-    # -------------------------------- cslicer end -------------------------------------
+    sub.run('git co trunk', shell=True)
+    sub.run('git co master', shell=True)
+    sub.run('git br -D orig', shell=True)
     # cherry-pick history slice to a new branch, reset start and end
     cslicer_history_slice, commit_msg_list = \
                                     extractHistorySliceFromCSlicerLog(cslicer_temp_log)
@@ -1856,15 +1972,20 @@ def runCSlicerDefiner(example):
         cslicer_history_slice.append('4379a681')
         commit_msg_list.append('Cut-n-paste bug')
     end = applyHistorySlice(repo_path, start, cslicer_history_slice, commit_msg_list, \
-                                'aftercslicer')
-    # temp definer config file
+                                'after-cslicer')
+    cslicer_end_time = time.time()
+    cslicer_exec_time = cslicer_end_time - start_time
+    countChangedLines(cslicer_temp_log, repo_path, 'cslicer')
+    # -------------------------------- cslicer end -------------------------------------
+    label .definer
+    # -------------------------------- definer start -------------------------------------
+    # temp definer config file 
     definer_config_file = updateDefinerConfig(example, end, TEMP_CONFIGS_DIR)
-    definer_log = CSLICER_DEFINER_OUTPUT_DIR + '/' + example + '.log'
+    definer_log = output_dir + '/' + example + '.log'
     # checkout to original end commit and run the tests
     _, end, _, _, test_suite, _, _, _ = extractInfoFromDefinerConfigs(example)
     os.chdir(repo_path)
-    # CZ: the following part might be not needed. Need test.
-    # move all untracked test files to temp dir (for running jacoco needed) -----------
+    # move all untracked test files to temp dir (for running jacoco needed)-----------
     p = sub.Popen('git ls-files --others --exclude-standard', shell=True, \
                       stdout=sub.PIPE, stderr=sub.PIPE)
     p.wait()
@@ -1881,14 +2002,34 @@ def runCSlicerDefiner(example):
             #os.remove(lines[i].strip())
     # -------------------------------------------------------------------------------
     runTestsAtEndCommitForDefiner(example, end, repo_path, test_suite)
-    runDefinerTool(definer_log, definer_config_file, 'aftercslicer')
+    runDefinerTool(definer_log, definer_config_file, 'after-cslicer')
     cleanRepoAfterDefinerTimeout(repo_path) # when definer timeout, remove lock files
+    # extract history slice from definer log
+    definer_history_slice, commit_msg_list = \
+                                         extractHistorySliceFromDefinerLog(definer_log)
+    if len(definer_history_slice) == 0 and len(commit_msg_list) == 0:
+        print ('Definer times out!')
+        definer_exec_time = 'TIME OUT'
+        final_log = definer_log
+        goto .timeout
+    end = applyHistorySlice(repo_path, start, definer_history_slice, commit_msg_list, \
+                                'after-cslicer-definer')
+    # cache intermediate repo after cslicer-definer (CD)
+    definer_end_time = time.time()
+    definer_exec_time = definer_end_time - cslicer_end_time
+    final_log = definer_log
     # -------------------------------- definer end -------------------------------------
+    label .timeout
+    label .skip_suffix
     # debug: move repo to somewhere else
     end_time = time.time()
     run_time = end_time - start_time
-    putTimeinLog(definer_log, run_time)
-    countChangedLines(definer_log, repo_path, 'definer')
+    time_dict = collections.OrderedDict({})
+    time_dict['[CSlicer Exec Time]'] = cslicer_exec_time
+    time_dict['[Definer Exec Time]'] = definer_exec_time
+    time_dict['[Total Exec Time]'] = run_time
+    insertTimeDictinLog(final_log, time_dict)
+    countChangedLines(final_log, repo_path, 'definer')
     #backupRepoForDebugging(example, repo_path)
     cleanTempLogs()
 
@@ -5355,7 +5496,7 @@ if __name__ == '__main__':
         exit(0)
     if opts.split_cslicer_one:
         example = opts.split_cslicer_one
-        runSplitCSlicer(example)
+        runSplitCSlicer(example, share_prefix, share_suffix)
         exit(0)
     if opts.split_definer_one: 
         example = opts.split_definer_one
@@ -5371,7 +5512,7 @@ if __name__ == '__main__':
         exit(0)
     if opts.definer_split_cslicer_one:
         example = opts.definer_split_cslicer_one
-        runDefinerSplitCSlicer(example)
+        runDefinerSplitCSlicer(example, share_prefix, share_suffix)
         exit(0)
     if opts.definer_split_definer_one: 
         example = opts.definer_split_definer_one
@@ -5395,7 +5536,7 @@ if __name__ == '__main__':
         exit(0)
     if opts.cslicer_definer_one:
         example = opts.cslicer_definer_one
-        runCSlicerDefiner(example)
+        runCSlicerDefiner(example, share_prefix, share_suffix)
         exit(0)
     if opts.split_cslicer_definer_one: 
         example = opts.split_cslicer_definer_one

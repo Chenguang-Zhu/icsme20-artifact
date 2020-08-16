@@ -1961,9 +1961,9 @@ def runCSlicerDefiner(example, share_prefix, share_suffix, \
     cslicer_temp_log = output_dir + '/' + example + '.log.phase1'
     runCSlicerTool(cslicer_temp_log, config_file, 'orig')
     # delete orig branch
-    sub.run('git co trunk', shell=True)
-    sub.run('git co master', shell=True)
-    sub.run('git br -D orig', shell=True)
+    sub.run('git checkout trunk', shell=True)
+    sub.run('git checkout master', shell=True)
+    sub.run('git branch -D orig', shell=True)
     # cherry-pick history slice to a new branch, reset start and end
     cslicer_history_slice, commit_msg_list = \
                                     extractHistorySliceFromCSlicerLog(cslicer_temp_log)

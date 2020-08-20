@@ -4,6 +4,8 @@ FROM picoded/ubuntu-openjdk-8-jdk
 
 MAINTAINER  Chenguang Zhu <cgzhu@utexas.edu>
 
+ENV LANG C.UTF-8
+
 # Install sofware properties common
 RUN \
   apt-get update && \
